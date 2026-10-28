@@ -4,3 +4,4 @@
 dist/
 spikes/.build/
 .DS_Store
+notarization.json
