@@ -8,8 +8,13 @@ import Foundation
 public final class EventHub: @unchecked Sendable {
     public typealias Sink = @Sendable (Event) -> Void
 
+    /// Ids are reserved in blocks and the block's end is stored, so that ids are never
+    /// reused after a restart, provisional ones included (only finals are stored).
+    static let reservation = 1000
+
     private let lock = NSLock()
     private var nextID: Int
+    private var reservedThrough: Int
     private var recent: [Event] = []
     private let capacity: Int
     private var sinks: [UUID: (StreamFilter, Sink)] = [:]
@@ -22,43 +27,59 @@ public final class EventHub: @unchecked Sendable {
     public init(capacity: Int = 2000, store: TranscriptStore? = nil) {
         self.capacity = capacity
         self.store = store
-        self.nextID = (store?.lastEventID() ?? 0) + 1
+        let start = max(store?.lastEventID() ?? 0, store?.reservedEventID() ?? 0) + 1
+        nextID = start
+        reservedThrough = start + Self.reservation
+        store?.reserveEventIDs(through: reservedThrough)
     }
 
-    /// Publishes a segment: numbers it, keeps it, stores it if final, and delivers it.
+    /// Publishes a segment: numbers it, keeps it, stores it if it is a final with text,
+    /// and delivers it.
     @discardableResult
     public func publish(_ segment: Segment) -> Event {
         lock.lock()
         let event = Event(id: nextID, segment: segment)
         nextID += 1
+        var reserve: Int?
+        if nextID >= reservedThrough {
+            reservedThrough = nextID + Self.reservation
+            reserve = reservedThrough
+        }
         recent.append(event)
         if recent.count > capacity { recent.removeFirst(recent.count - capacity) }
         let targets = sinks.values.filter { $0.0.admits(segment) }.map(\.1)
         lock.unlock()
-        if segment.state == .final { store?.append(event) }
+        if let reserve { store?.reserveEventIDs(through: reserve) }
+        if segment.state == .final, !segment.full.isEmpty { store?.append(event) }
         for sink in targets { sink(event) }
         return event
     }
 
-    /// Subscribes, first replaying what came after `lastID` (if given), atomically with
-    /// the subscription so that nothing is missed or repeated. Returns a token for `unsubscribe`.
-    public func subscribe(filter: StreamFilter, after lastID: Int?, sink: @escaping Sink) -> UUID {
+    /// Subscribes `sink` to new events and returns, beside the token for `unsubscribe`,
+    /// the events after `lastID` that the subscriber missed, oldest first. Every event is
+    /// either in that replay or delivered to the sink, never both; the sink may be called
+    /// before the caller has sent the replay, so the caller orders them (see Server).
+    public func subscribe(filter: StreamFilter, after lastID: Int?, sink: @escaping Sink) -> (token: UUID, replay: [Event]) {
         let token = UUID()
-        lock.lock()
-        var replay: [Event] = []
+        var older: [Event] = []
         if let lastID {
+            lock.lock()
             let oldestKept = recent.first?.id ?? nextID
-            if lastID + 1 < oldestKept, let store {
-                // Older than the buffer: only final segments were kept on disk.
-                replay += store.events(after: lastID, before: oldestKept)
+            lock.unlock()
+            // Older than the buffer: only final segments were kept on disk. Read outside the lock.
+            if lastID < oldestKept - 1, let store {
+                older = store.events(after: lastID, before: oldestKept)
             }
-            replay += recent.filter { $0.id > lastID }
         }
-        replay = replay.filter { filter.admits($0.segment) }
+        lock.lock()
+        var replay = older
+        if let lastID {
+            let after = max(lastID, older.last?.id ?? lastID)
+            replay += recent.filter { $0.id > after }
+        }
         sinks[token] = (filter, sink)
         lock.unlock()
-        for e in replay { sink(e) }
-        return token
+        return (token, replay.filter { filter.admits($0.segment) })
     }
 
     public func unsubscribe(_ token: UUID) {

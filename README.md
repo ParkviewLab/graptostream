@@ -42,7 +42,7 @@ In **Settings**:
 graptostream serves HTTP/1.1 on three addresses:
 
 - the Unix socket `~/Library/Application Support/graptostream/stream.sock`, for your own processes (the socket is readable only by you);
-- `http://127.0.0.1:35860`, for programs and pages on this Mac (requests must name `localhost` or `127.0.0.1` as their host, and pages on other sites are refused);
+- `http://127.0.0.1:35860`, for programs on this Mac. Requests must name `localhost` or `127.0.0.1` as their host, and requests from web pages on other sites are refused (by their `Origin` or `Sec-Fetch-Site` header). Any account on this Mac can reach this address; on a Mac shared with others, use the socket;
 - when switched on, the same port on the LAN, where every request carries `Authorization: Bearer <token>`. It is advertised by Bonjour as `_graptostream._tcp`.
 
 | Endpoint | What it does |
@@ -99,7 +99,7 @@ A client that needs listening renews its request about once a minute while it wa
 
 ## Privacy
 
-Audio is never stored. Final text is kept on this Mac as one JSON Lines file per day in `~/Library/Application Support/graptostream/transcript/`, and deleted after the retention period. The stream reaches other machines only when you switch the network listener on, and then only clients holding a token you issued.
+Audio is never stored. Final text is kept on this Mac as one JSON Lines file per day in `~/Library/Application Support/graptostream/transcript/`, and deleted after the retention period. The stream reaches other machines only when you switch the network listener on, and then only clients holding a token you issued; revoking a token closes that client's open stream. The LAN traffic, tokens included, is plain HTTP, which suits a private home network and not an open one.
 
 ## Build from source
 

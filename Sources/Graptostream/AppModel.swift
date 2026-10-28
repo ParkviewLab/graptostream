@@ -114,6 +114,8 @@ final class AppModel {
     private var tick: Timer?
     private var sweep: Timer?
     private var transitioning = false
+    /// A change asked for while a transition was running; applied when it ends.
+    private var evaluateAgain = false
 
     private init() {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -145,7 +147,7 @@ final class AppModel {
         recognizer.onSegment = { seg in
             var seg = seg
             if seg.state == .final {
-                let a = addresser.address(seg.text, at: seg.end)
+                let a = addresser.address(seg.text, start: seg.start, end: seg.end)
                 seg.full = seg.text
                 seg.text = a.text
                 seg.to = a.to
@@ -276,9 +278,18 @@ final class AppModel {
     }
 
     private func apply(listen: Bool, devices: [InputDevice]) async {
-        guard !transitioning else { return }
+        guard !transitioning else {
+            evaluateAgain = true
+            return
+        }
         transitioning = true
-        defer { transitioning = false }
+        defer {
+            transitioning = false
+            if evaluateAgain {
+                evaluateAgain = false
+                evaluate(force: true)
+            }
+        }
         capture.stop()
         feed.stop()
         if !listen {
@@ -321,6 +332,7 @@ final class AppModel {
             provisional = seg
         } else {
             if provisional?.seg == seg.seg { provisional = nil }
+            guard !seg.full.isEmpty else { return }
             recent.append(seg)
             if recent.count > 50 { recent.removeFirst(recent.count - 50) }
         }

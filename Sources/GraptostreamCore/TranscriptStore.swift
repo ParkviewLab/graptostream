@@ -21,18 +21,35 @@ public final class TranscriptStore: @unchecked Sendable {
         return String(format: "%04d-%02d-%02d.jsonl", c.year ?? 0, c.month ?? 0, c.day ?? 0)
     }
 
+    /// Appends one event as a line. Never overwrites: a missing day file is created, an
+    /// existing one is appended to, and a failed write (a full disk) is dropped, not fatal.
     public func append(_ event: Event) {
         lock.lock()
         defer { lock.unlock() }
         let url = directory.appendingPathComponent(fileName(for: event.segment.end))
         let line = Data((event.json + "\n").utf8)
-        if let handle = try? FileHandle(forWritingTo: url) {
-            handle.seekToEndOfFile()
-            handle.write(line)
-            try? handle.close()
-        } else {
-            try? line.write(to: url, options: .atomic)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
         }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: line)
+    }
+
+    var reservationURL: URL { directory.appendingPathComponent("reserved-event-id") }
+
+    /// The end of the last block of event ids reserved, if any.
+    public func reservedEventID() -> Int? {
+        lock.lock()
+        defer { lock.unlock() }
+        return (try? String(contentsOf: reservationURL, encoding: .utf8)).flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    }
+
+    public func reserveEventIDs(through id: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        try? Data("\(id)\n".utf8).write(to: reservationURL, options: .atomic)
     }
 
     /// The day files, oldest first.

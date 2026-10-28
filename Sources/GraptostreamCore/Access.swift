@@ -23,7 +23,10 @@ public struct ClientToken: Codable, Sendable, Equatable, Identifiable {
 
     public static func make(name: String, now: Date = Date()) -> (token: ClientToken, secret: String) {
         var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
+            var generator = SystemRandomNumberGenerator()
+            bytes = (0..<32).map { _ in UInt8.random(in: .min ... .max, using: &generator) }
+        }
         let secret = "gs_" + Data(bytes).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
@@ -47,8 +50,9 @@ public struct AccessPolicy: Sendable {
     }
 
     public enum Decision: Sendable, Equatable {
-        /// Served, on behalf of this client name (a token's name, or nil when local).
-        case allow(client: String?)
+        /// Served, on behalf of this client name (a token's name, or nil when local), and,
+        /// for a LAN client, the id of the token it showed.
+        case allow(client: String?, token: String? = nil)
         case deny(status: Int, reason: String)
     }
 
@@ -60,8 +64,10 @@ public struct AccessPolicy: Sendable {
         ["http://localhost:\(port)", "http://127.0.0.1:\(port)", "http://[::1]:\(port)"]
     }
 
-    /// A browser sends `Origin` on cross-site requests, and its `Host` is the name it used,
-    /// so a page that has rebound a domain to 127.0.0.1 fails both checks.
+    /// A browser's `Host` is the name it used, so a page that has rebound a domain to
+    /// 127.0.0.1 fails the Host check. A cross-site page's request carries `Origin` (for
+    /// anything but a simple GET) or `Sec-Fetch-Site: cross-site` (current browsers, every
+    /// request, an `<img>` included), and either refuses it.
     public func decide(_ request: HTTPRequest, from source: RequestSource) -> Decision {
         switch source {
         case .socket:
@@ -73,6 +79,9 @@ public struct AccessPolicy: Sendable {
             if let o = request.header("origin")?.lowercased(), !localOrigins.contains(o) {
                 return .deny(status: 403, reason: "cross-origin requests are not accepted")
             }
+            if let site = request.header("sec-fetch-site")?.lowercased(), site != "same-origin", site != "none" {
+                return .deny(status: 403, reason: "cross-site requests are not accepted")
+            }
             return .allow(client: nil)
         case .network:
             guard let auth = request.header("authorization"), auth.lowercased().hasPrefix("bearer ") else {
@@ -83,7 +92,7 @@ public struct AccessPolicy: Sendable {
             guard let t = tokens.first(where: { constantTimeEqual($0.hash, h) }) else {
                 return .deny(status: 401, reason: "unknown token")
             }
-            return .allow(client: t.name)
+            return .allow(client: t.name, token: t.id)
         }
     }
 

@@ -27,7 +27,13 @@ final class Recognizer: @unchecked Sendable {
 
     let locale = Locale(identifier: "en-US")
     /// A segment still provisional after this long is finalised.
-    var maximumSegmentSeconds: Double = 30
+    var maximumSegmentSeconds: Double {
+        get { lock.withLock { _maximumSegmentSeconds } }
+        set { lock.withLock { _maximumSegmentSeconds = newValue } }
+    }
+    private var _maximumSegmentSeconds: Double = 30
+    /// Whether the current segment has had a provisional version published.
+    private var currentPublished = false
 
     private let lock = NSLock()
     private var analyzer: SpeechAnalyzer?
@@ -134,7 +140,13 @@ final class Recognizer: @unchecked Sendable {
             counter += 1
             currentID = String(format: "%06d", counter)
             currentStart = start
+            currentPublished = false
         }
+        // An empty final still closes a segment whose provisional text was published,
+        // so that readers replace it; an empty provisional, or an empty final with
+        // nothing before it, is not published.
+        let publish = !text.isEmpty || (result.isFinal && currentPublished)
+        if !result.isFinal, !text.isEmpty { currentPublished = true }
         let id = currentID!
         let segStart = currentStart ?? start
         let origin = sessionStart
@@ -143,11 +155,11 @@ final class Recognizer: @unchecked Sendable {
             currentID = nil
             currentStart = nil
         }
-        let tooLong = !result.isFinal && end - segStart > maximumSegmentSeconds
+        let tooLong = !result.isFinal && end - segStart > _maximumSegmentSeconds
         let analyzer = self.analyzer
         lock.unlock()
 
-        guard !text.isEmpty else { return }
+        guard publish else { return }
         let seg = Segment(seg: id, state: result.isFinal ? .final : .provisional,
                           start: origin.addingTimeInterval(start.isFinite ? start : 0),
                           end: origin.addingTimeInterval(end.isFinite ? end : 0),

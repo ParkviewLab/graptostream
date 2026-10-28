@@ -73,33 +73,49 @@ final class Collected: @unchecked Sendable {
         let hub = EventHub()
         for i in 1...5 { hub.publish(seg("\(i)", .final, "t\(i)")) }
         let got = Collected()
-        _ = hub.subscribe(filter: .init(), after: 3) { got.add($0) }
+        let (_, replay) = hub.subscribe(filter: .init(), after: 3) { got.add($0) }
         hub.publish(seg("6", .final, "t6"))
-        #expect(got.ids == [4, 5, 6])
+        #expect(replay.map(\.id) == [4, 5])
+        #expect(got.ids == [6])
     }
 
     @Test func eventsOlderThanTheBufferComeFromTheStore() {
         let store = TranscriptStore(directory: tempDir())
         let hub = EventHub(capacity: 2, store: store)
         for i in 1...5 { hub.publish(seg("\(i)", .final, "t\(i)")) }
-        let got = Collected()
-        _ = hub.subscribe(filter: .init(), after: 1) { got.add($0) }
-        #expect(got.ids == [2, 3, 4, 5])
+        let (_, replay) = hub.subscribe(filter: .init(), after: 1) { _ in }
+        #expect(replay.map(\.id) == [2, 3, 4, 5])
     }
 
-    @Test func numberingContinuesAfterARestart() {
+    @Test func idsAreNeverReusedAfterARestart() {
         let dir = tempDir()
         let first = EventHub(store: TranscriptStore(directory: dir))
         first.publish(seg("1", .final, "a"))
-        first.publish(seg("2", .final, "b"))
+        let lastProvisional = first.publish(seg("2", .provisional, "b"))
         let second = EventHub(store: TranscriptStore(directory: dir))
-        #expect(second.publish(seg("3", .final, "c")).id == 3)
+        #expect(second.publish(seg("3", .final, "c")).id > lastProvisional.id)
+    }
+
+    @Test func anOverflowingLastEventIDIsHarmless() {
+        let hub = EventHub()
+        hub.publish(seg("1", .final, "a"))
+        let (_, replay) = hub.subscribe(filter: .init(), after: Int.max) { _ in }
+        #expect(replay.isEmpty)
+        let (_, all) = hub.subscribe(filter: .init(), after: Int.min) { _ in }
+        #expect(all.map(\.id) == [1])
+    }
+
+    @Test func emptyFinalsAreNotStored() {
+        let store = TranscriptStore(directory: tempDir())
+        let hub = EventHub(store: store)
+        hub.publish(seg("1", .final, ""))
+        #expect(store.events().isEmpty)
     }
 
     @Test func unsubscribedSinksReceiveNothing() {
         let hub = EventHub()
         let got = Collected()
-        let t = hub.subscribe(filter: .init(), after: nil) { got.add($0) }
+        let (t, _) = hub.subscribe(filter: .init(), after: nil) { got.add($0) }
         hub.unsubscribe(t)
         hub.publish(seg("1", .final, "a"))
         #expect(got.ids.isEmpty)
@@ -135,7 +151,7 @@ final class Collected: @unchecked Sendable {
 
 @Suite struct Addressing {
     let names = [SpokenName(name: "Fred", app: "scrinotia"), SpokenName(name: "Hazel tracking", app: "hazel-tracking"),
-                 SpokenName(name: "Wilma", app: "paper-boxing")]
+                 SpokenName(name: "Barney", app: "paper-boxing")]
 
     @Test func aNameAtTheStartAddressesTheApp() {
         let a = Addresser(names: names).address("Fred, open today's note.")
@@ -150,9 +166,16 @@ final class Collected: @unchecked Sendable {
 
     @Test func nearSpellingsAndPossessivesCount() {
         let ad = Addresser(names: names)
-        #expect(ad.address("Wilmah, list the sites").to == "paper-boxing")
+        #expect(ad.address("Barny, list the sites").to == "paper-boxing")
         #expect(ad.address("Fred's going to open the note").to == "scrinotia")
         #expect(ad.address("Ted, open the note").to == nil)  // short names must match exactly
+    }
+
+    @Test func shortNamesDoNotMatchCommonWords() {
+        let ad = Addresser(names: names)
+        for sentence in ["Free time is scarce.", "Feed the cat.", "Fed up with it.", "Red is my colour."] {
+            #expect(ad.address(sentence).to == nil)
+        }
     }
 
     @Test func multiwordNamesMatchAndAreRemoved() {
@@ -165,17 +188,20 @@ final class Collected: @unchecked Sendable {
     @Test func aNameOnItsOwnAddressesTheNextUtterance() {
         let ad = Addresser(names: names)
         let t = Date(timeIntervalSince1970: 1_800_000_000)
-        #expect(ad.address("Fred.", at: t).to == "scrinotia")
-        let next = ad.address("Open today's note.", at: t.addingTimeInterval(2))
-        #expect(next == Addressed(to: "scrinotia", heard: "Fred", text: "Open today's note."))
-        #expect(ad.address("And another thing.", at: t.addingTimeInterval(3)).to == nil)
+        #expect(ad.address("Fred.", start: t, end: t.addingTimeInterval(0.5)).to == "scrinotia")
+        // A long command after the name: the gap is measured from the name's end to the command's start.
+        let next = ad.address("Open today's note and then read me the first paragraph of it slowly.",
+                              start: t.addingTimeInterval(1.5), end: t.addingTimeInterval(8))
+        #expect(next.to == "scrinotia")
+        #expect(next.heard == "Fred")
+        #expect(ad.address("And another thing.", start: t.addingTimeInterval(9), end: t.addingTimeInterval(10)).to == nil)
     }
 
     @Test func theCarryLapses() {
         let ad = Addresser(names: names, carryWindow: 4)
         let t = Date(timeIntervalSince1970: 1_800_000_000)
-        _ = ad.address("Fred.", at: t)
-        #expect(ad.address("Open the note.", at: t.addingTimeInterval(10)).to == nil)
+        _ = ad.address("Fred.", start: t, end: t.addingTimeInterval(0.5))
+        #expect(ad.address("Open the note.", start: t.addingTimeInterval(10), end: t.addingTimeInterval(11)).to == nil)
     }
 }
 
@@ -251,6 +277,14 @@ final class Collected: @unchecked Sendable {
         #expect(policy.decide(req([:]), from: .loopback) != .allow(client: nil))
     }
 
+    @Test func loopbackRefusesACrossSitePageWithoutAnOrigin() {
+        // An <img> or a simple GET from another site carries no Origin, but does carry Sec-Fetch-Site.
+        let r = req(["Host": "127.0.0.1:35860", "Sec-Fetch-Site": "cross-site"])
+        #expect(policy.decide(r, from: .loopback) == .deny(status: 403, reason: "cross-site requests are not accepted"))
+        let typed = req(["Host": "127.0.0.1:35860", "Sec-Fetch-Site": "none"])
+        #expect(policy.decide(typed, from: .loopback) == .allow(client: nil))
+    }
+
     @Test func loopbackRefusesAForeignOrigin() {
         let r = req(["Host": "127.0.0.1:35860", "Origin": "https://evil.example"])
         #expect(policy.decide(r, from: .loopback) != .allow(client: nil))
@@ -259,8 +293,12 @@ final class Collected: @unchecked Sendable {
     }
 
     @Test func theNetworkNeedsAKnownToken() {
-        #expect(policy.decide(req(["Authorization": "Bearer \(secret)"]), from: .network) == .allow(client: "vision-pro"))
-        #expect(policy.decide(req(["Authorization": "Bearer gs_wrong"]), from: .network) != .allow(client: "vision-pro"))
+        guard case .allow(let client, let token) = policy.decide(req(["Authorization": "Bearer \(secret)"]), from: .network) else {
+            Issue.record("refused"); return
+        }
+        #expect(client == "vision-pro")
+        #expect(token == policy.tokens[0].id)
+        #expect(policy.decide(req(["Authorization": "Bearer gs_wrong"]), from: .network) == .deny(status: 401, reason: "unknown token"))
         #expect(policy.decide(req([:]), from: .network) == .deny(status: 401, reason: "a bearer token is required"))
     }
 }
