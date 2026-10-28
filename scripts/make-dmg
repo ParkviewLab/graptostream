@@ -1,0 +1,23 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Gary Frattarola <garyf@parkviewlab.ai>
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Packs Graptostream.app into dist/graptostream-<version>-macos.dmg: a disk image
+# holding the app beside an Applications shortcut, to drag the app across.
+# Signs the image with SIGN_IDENTITY when it is set. Run ./build.sh first.
+set -e
+cd "$(dirname "$0")/.."
+VERSION=$(tr -d '[:space:]' < VERSION.txt)
+OUT="dist/graptostream-$VERSION-macos.dmg"
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+mkdir -p dist
+rm -f "$OUT"
+ditto Graptostream.app "$STAGE/Graptostream.app"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -quiet -volname "graptostream" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$OUT"
+if [ -n "$SIGN_IDENTITY" ]; then
+  codesign --force --timestamp --sign "$SIGN_IDENTITY" "$OUT"
+fi
+hdiutil verify -quiet "$OUT"
+echo "$OUT"
