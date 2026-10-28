@@ -1,0 +1,27 @@
+name: Test
+
+# The package builds and its tests pass on a macOS runner with the macOS 26 SDK
+# or later, which SpeechAnalyzer needs.
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v6
+      - name: Toolchain
+        run: |
+          swift --version
+          xcrun --show-sdk-version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
