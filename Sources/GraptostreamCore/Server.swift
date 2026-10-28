@@ -27,12 +27,18 @@ public final class Server: @unchecked Sendable {
         public var name: String
         public var via: String
         public var since: Date
+        /// The id of the token a LAN client showed.
+        public var token: String?
     }
 
     public static let bonjourType = "_graptostream._tcp"
-    /// A client that has this many unsent events is dropped; it catches up on reconnecting.
+    /// A client that has this many unsent writes is dropped; it catches up on reconnecting.
     public static let maximumPendingSends = 500
     public static let keepAliveInterval: TimeInterval = 15
+    /// A connection that has not sent a whole request in this time is closed.
+    public static let requestTimeout: TimeInterval = 10
+    /// Connections beyond this many are refused at once.
+    public static let maximumConnections = 256
 
     private let queue = DispatchQueue(label: "graptostream.server")
     private let hub: EventHub
@@ -42,11 +48,11 @@ public final class Server: @unchecked Sendable {
     private var listeners: [NWListener] = []
     private var readers: [ObjectIdentifier: Reader] = [:]
     private var streams: [ObjectIdentifier: Stream] = [:]
-    public private(set) var configuration: Configuration?
+    private var connections = 0
+    private var _configuration: Configuration?
+    private var _lastError: String?
     /// Called on the server's queue when readers or listener state change.
     public var onChange: (@Sendable () -> Void)?
-    /// The last error a listener reported, for the window to show.
-    public private(set) var lastError: String?
 
     public init(hub: EventHub, router: Router, tokens: [ClientToken]) {
         self.hub = hub
@@ -54,27 +60,36 @@ public final class Server: @unchecked Sendable {
         self.policy = AccessPolicy(port: 0, tokens: tokens)
     }
 
+    public var configuration: Configuration? { lock.withLock { _configuration } }
+    /// The last error a listener reported, for the window to show.
+    public var lastError: String? { lock.withLock { _lastError } }
+
+    /// Replaces the tokens, and closes the streams of LAN clients whose token was revoked.
     public func setTokens(_ tokens: [ClientToken]) {
-        lock.lock()
-        policy.tokens = tokens
-        lock.unlock()
+        let ids = Set(tokens.map(\.id))
+        let revoked: [Stream] = lock.withLock {
+            policy.tokens = tokens
+            return readers.compactMap { key, r in
+                guard let t = r.token, !ids.contains(t) else { return nil }
+                return streams[key]
+            }
+        }
+        for s in revoked { s.drop() }
     }
 
     public func currentReaders() -> [Reader] {
-        lock.lock()
-        defer { lock.unlock() }
-        return readers.values.sorted { $0.since < $1.since }
+        lock.withLock { readers.values.sorted { $0.since < $1.since } }
     }
 
     // MARK: listening
 
     public func start(_ config: Configuration) {
         stop()
-        lock.lock()
-        configuration = config
-        policy.port = config.port
-        lastError = nil
-        lock.unlock()
+        lock.withLock {
+            _configuration = config
+            policy.port = config.port
+            _lastError = nil
+        }
 
         // The Unix socket, readable and writable by this user only.
         unlink(config.socketPath)
@@ -87,11 +102,14 @@ public final class Server: @unchecked Sendable {
         // TCP: loopback only, or every interface when the LAN listener is on.
         let tcpParams = NWParameters.tcp
         tcpParams.allowLocalEndpointReuse = true
-        if !config.lan {
-            tcpParams.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: config.port)!)
+        guard let port = NWEndpoint.Port(rawValue: config.port) else {
+            note(error: "port \(config.port) is not valid")
+            return
         }
-        let tcp = config.lan ? try? NWListener(using: tcpParams, on: NWEndpoint.Port(rawValue: config.port)!)
-                             : try? NWListener(using: tcpParams)
+        if !config.lan {
+            tcpParams.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: port)
+        }
+        let tcp = config.lan ? try? NWListener(using: tcpParams, on: port) : try? NWListener(using: tcpParams)
         if config.lan, let tcp {
             tcp.service = NWListener.Service(name: config.bonjourName, type: Self.bonjourType)
         }
@@ -99,16 +117,13 @@ public final class Server: @unchecked Sendable {
     }
 
     public func stop() {
-        lock.lock()
-        let ls = listeners
-        listeners = []
-        let ss = Array(streams.values)
-        streams = [:]
-        readers = [:]
-        let path = configuration?.socketPath
-        lock.unlock()
+        let (ls, ss, path): ([NWListener], [Stream], String?) = lock.withLock {
+            let out = (listeners, Array(streams.values), _configuration?.socketPath)
+            listeners = []
+            return out
+        }
         for l in ls { l.cancel() }
-        for s in ss { s.close() }
+        for s in ss { s.drop() }
         if let path { unlink(path) }
     }
 
@@ -127,15 +142,11 @@ public final class Server: @unchecked Sendable {
         }
         listener.newConnectionHandler = { [weak self] conn in self?.accept(conn, source: source(conn)) }
         listener.start(queue: queue)
-        lock.lock()
-        listeners.append(listener)
-        lock.unlock()
+        lock.withLock { listeners.append(listener) }
     }
 
     private func note(error: String) {
-        lock.lock()
-        lastError = error
-        lock.unlock()
+        lock.withLock { _lastError = error }
         onChange?()
     }
 
@@ -143,7 +154,7 @@ public final class Server: @unchecked Sendable {
         if case .hostPort(let host, _) = conn.endpoint {
             switch host {
             case .ipv4(let a): return a == .loopback || "\(a)".hasPrefix("127.")
-            case .ipv6(let a): return a == .loopback || "\(a)" == "::ffff:127.0.0.1"
+            case .ipv6(let a): return a == .loopback || "\(a)".hasPrefix("::ffff:127.")
             case .name(let n, _): return n == "localhost"
             @unknown default: return false
             }
@@ -154,21 +165,44 @@ public final class Server: @unchecked Sendable {
     // MARK: connections
 
     private func accept(_ conn: NWConnection, source: RequestSource) {
+        let admitted: Bool = lock.withLock {
+            guard connections < Self.maximumConnections else { return false }
+            connections += 1
+            return true
+        }
+        guard admitted else {
+            conn.cancel()
+            return
+        }
+        let released = Flag()
+        conn.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .failed, .cancelled:
+                if released.setOnce() { self?.lock.withLock { self?.connections -= 1 } }
+            default: break
+            }
+        }
         conn.start(queue: queue)
-        receive(conn, source: source, buffer: Data())
+        let complete = Flag()
+        queue.asyncAfter(deadline: .now() + Self.requestTimeout) {
+            if !complete.isSet { conn.cancel() }
+        }
+        receive(conn, source: source, buffer: Data(), complete: complete)
     }
 
-    private func receive(_ conn: NWConnection, source: RequestSource, buffer: Data) {
+    private func receive(_ conn: NWConnection, source: RequestSource, buffer: Data, complete: Flag) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, done, error in
             guard let self else { return }
             var buf = buffer
             if let data { buf.append(data) }
             switch HTTPRequest.parse(buf) {
             case .incomplete:
-                if done || error != nil { conn.cancel() } else { self.receive(conn, source: source, buffer: buf) }
+                if done || error != nil { conn.cancel() } else { self.receive(conn, source: source, buffer: buf, complete: complete) }
             case .invalid(let why):
+                _ = complete.setOnce()
                 self.respond(conn, .error(400, why))
             case .complete(let req, _):
+                _ = complete.setOnce()
                 self.handle(req, conn: conn, source: source)
             }
         }
@@ -179,108 +213,155 @@ public final class Server: @unchecked Sendable {
     }
 
     private func handle(_ req: HTTPRequest, conn: NWConnection, source: RequestSource) {
-        lock.lock()
-        let decision = policy.decide(req, from: source)
-        lock.unlock()
+        let decision = lock.withLock { policy.decide(req, from: source) }
         let client: String?
+        let token: String?
         switch decision {
         case .deny(let status, let reason):
             respond(conn, .error(status, reason))
             return
-        case .allow(let c):
+        case .allow(let c, let t):
             client = c
+            token = t
         }
         switch router.route(req, client: client) {
         case .response(let r):
             respond(conn, r)
         case .stream(let filter, let lastID, let name):
             let via: String = switch source { case .socket: "socket"; case .loopback: "loopback"; case .network: "lan" }
-            openStream(conn, filter: filter, lastID: lastID, reader: Reader(name: name, via: via, since: Date()))
+            openStream(conn, filter: filter, lastID: lastID,
+                       reader: Reader(name: name, via: via, since: Date(), token: token))
         }
     }
 
     // MARK: streams
 
+    /// A thread-safe one-way flag.
+    final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var isSet: Bool { lock.withLock { value } }
+        /// Sets the flag; true only for the call that set it.
+        func setOnce() -> Bool { lock.withLock { defer { value = true }; return !value } }
+    }
+
+    /// One open stream. Live events that arrive while the replay is being sent are held
+    /// and sent after it, so a client sees every event once and in order.
     final class Stream: @unchecked Sendable {
         let conn: NWConnection
-        let lock = NSLock()
-        var pending = 0
-        var closed = false
+        private let lock = NSLock()
+        private var pending = 0
+        private var closed = false
+        private var replaying = true
+        private var held: [Event] = []
+        private var lastSent = Int.min
         var token: UUID?
         var timer: DispatchSourceTimer?
+        var onDrop: (@Sendable () -> Void)?
+
         init(conn: NWConnection) { self.conn = conn }
 
-        /// Sends bytes; false when the client has fallen too far behind.
-        func send(_ text: String) -> Bool {
-            lock.lock()
-            if closed { lock.unlock(); return true }
-            if pending >= Server.maximumPendingSends { lock.unlock(); return false }
+        /// Writes bytes; false when the client has fallen too far behind.
+        private func write(_ text: String) -> Bool {
+            if closed { return true }
+            if pending >= Server.maximumPendingSends { return false }
             pending += 1
-            lock.unlock()
             conn.send(content: Data(text.utf8), completion: .contentProcessed { [weak self] err in
                 guard let self else { return }
-                self.lock.lock()
-                self.pending -= 1
-                self.lock.unlock()
-                if err != nil { self.close() }
+                self.lock.withLock { self.pending -= 1 }
+                if err != nil { self.drop() }
             })
             return true
         }
 
-        func close() {
-            lock.lock()
-            if closed { lock.unlock(); return }
-            closed = true
-            lock.unlock()
+        func sendHead() { lock.withLock { _ = write(SSE.responseHead) } }
+
+        func keepAlive() {
+            let ok = lock.withLock { write(SSE.keepAlive) }
+            if !ok { drop() }
+        }
+
+        /// Sends the replay as one write, then the live events held meanwhile.
+        func sendReplay(_ events: [Event]) {
+            let ok: Bool = lock.withLock {
+                var text = events.map(SSE.frame).joined()
+                if let last = events.last?.id { lastSent = last }
+                for e in held where e.id > lastSent {
+                    text += SSE.frame(e)
+                    lastSent = e.id
+                }
+                held = []
+                replaying = false
+                return text.isEmpty || write(text)
+            }
+            if !ok { drop() }
+        }
+
+        func deliver(_ e: Event) {
+            let ok: Bool = lock.withLock {
+                if replaying {
+                    held.append(e)
+                    return held.count < Server.maximumPendingSends
+                }
+                guard e.id > lastSent else { return true }
+                lastSent = e.id
+                return write(SSE.frame(e))
+            }
+            if !ok { drop() }
+        }
+
+        func drop() {
+            let first: Bool = lock.withLock {
+                if closed { return false }
+                closed = true
+                return true
+            }
+            guard first else { return }
             timer?.cancel()
             conn.cancel()
+            onDrop?()
         }
     }
 
     private func openStream(_ conn: NWConnection, filter: StreamFilter, lastID: Int?, reader: Reader) {
         let stream = Stream(conn: conn)
         let key = ObjectIdentifier(stream)
-        _ = stream.send(SSE.responseHead)
-        lock.lock()
-        streams[key] = stream
-        readers[key] = reader
-        lock.unlock()
-
-        let drop: @Sendable () -> Void = { [weak self, weak stream] in
-            guard let self, let stream else { return }
-            if let t = stream.token { self.hub.unsubscribe(t) }
-            stream.close()
-            self.lock.lock()
-            self.streams[key] = nil
-            self.readers[key] = nil
-            self.lock.unlock()
+        stream.sendHead()
+        let hub = self.hub
+        stream.onDrop = { [weak self, weak stream] in
+            if let t = stream?.token { hub.unsubscribe(t) }
+            guard let self else { return }
+            self.lock.withLock {
+                self.streams[key] = nil
+                self.readers[key] = nil
+            }
             self.onChange?()
         }
-        conn.stateUpdateHandler = { state in
-            switch state {
-            case .failed, .cancelled: drop()
-            default: break
-            }
+        lock.withLock {
+            streams[key] = stream
+            readers[key] = reader
         }
-        stream.token = hub.subscribe(filter: filter, after: lastID) { [weak stream] event in
-            guard let stream else { return }
-            if !stream.send(SSE.frame(event)) { drop() }
+        // The connection count is released by accept's state handler; a failed or closed
+        // connection ends the stream through watchForClose or a failed write.
+        let (token, replay) = hub.subscribe(filter: filter, after: lastID) { [weak stream] event in
+            stream?.deliver(event)
         }
+        stream.token = token
+        stream.sendReplay(replay)
+
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + Self.keepAliveInterval, repeating: Self.keepAliveInterval)
-        timer.setEventHandler { [weak stream] in
-            if let stream, !stream.send(SSE.keepAlive) { drop() }
-        }
+        timer.setEventHandler { [weak stream] in stream?.keepAlive() }
         stream.timer = timer
         timer.resume()
-        // A client that closes its side ends the stream.
-        watchForClose(conn, drop: drop)
+        watchForClose(conn, stream: stream)
         onChange?()
     }
 
-    private func watchForClose(_ conn: NWConnection, drop: @escaping @Sendable () -> Void) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] _, _, done, error in
-            if done || error != nil { drop() } else { self?.watchForClose(conn, drop: drop) }
+    private func watchForClose(_ conn: NWConnection, stream: Stream) {
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self, weak stream] _, _, done, error in
+            guard let stream else { return }
+            if done || error != nil { stream.drop() } else { self?.watchForClose(conn, stream: stream) }
         }
     }
 }

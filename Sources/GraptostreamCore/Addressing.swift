@@ -26,13 +26,14 @@ public struct Addressed: Sendable, Equatable {
 
 /// Decides which app a final utterance is addressed to. A spoken name counts only
 /// at the start of an utterance, matched loosely (a near spelling or a possessive
-/// counts). A final that is nothing but a name addresses the next final, if it
-/// follows within `carryWindow`, since a pause after the name can make the speech
-/// engine end the utterance there.
+/// counts for names of six letters or more; shorter names must match exactly, so
+/// that "Fred" is not heard in "free", "feed" or "red"). A final that is nothing but
+/// a name addresses the next final, if it starts within `carryWindow` of the name's
+/// end, since a pause after the name can make the speech engine end the utterance there.
 public final class Addresser: @unchecked Sendable {
     private let lock = NSLock()
     private var names: [SpokenName]
-    private var pending: (name: SpokenName, heard: String, at: Date)?
+    private var pending: (name: SpokenName, heard: String, end: Date)?
     public var carryWindow: TimeInterval
 
     public init(names: [SpokenName] = [], carryWindow: TimeInterval = 4) {
@@ -80,8 +81,8 @@ public final class Addresser: @unchecked Sendable {
     /// How far a heard word may be from a name's word and still count.
     static func tolerance(_ word: String) -> Int {
         switch word.count {
-        case ..<4: 0
-        case 4...7: 1
+        case ..<6: 0
+        case 6...8: 1
         default: 2
         }
     }
@@ -100,8 +101,9 @@ public final class Addresser: @unchecked Sendable {
         return best
     }
 
-    /// Addresses one final utterance heard at `at`.
-    public func address(_ text: String, at: Date = Date()) -> Addressed {
+    /// Addresses one final utterance spoken from `start` to `end`.
+    public func address(_ text: String, start: Date = Date(), end: Date? = nil) -> Addressed {
+        let end = end ?? start
         lock.lock()
         defer { lock.unlock() }
         let ws = Self.words(text)
@@ -111,13 +113,13 @@ public final class Addresser: @unchecked Sendable {
             let restTrimmed = rest.trimmingCharacters(in: .whitespacesAndNewlines)
             if restTrimmed.isEmpty {
                 // A name on its own: it addresses what follows.
-                pending = (name, heard, at)
+                pending = (name, heard, end)
                 return Addressed(to: name.app, heard: heard, text: "")
             }
             pending = nil
             return Addressed(to: name.app, heard: heard, text: restTrimmed)
         }
-        if let p = pending, at.timeIntervalSince(p.at) <= carryWindow, !ws.isEmpty {
+        if let p = pending, start.timeIntervalSince(p.end) <= carryWindow, !ws.isEmpty {
             pending = nil
             return Addressed(to: p.name.app, heard: p.heard, text: text.trimmingCharacters(in: .whitespacesAndNewlines))
         }

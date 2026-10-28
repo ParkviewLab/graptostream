@@ -24,6 +24,9 @@ final class AudioCapture: @unchecked Sendable {
     var onInterrupted: (@Sendable (String) -> Void)?
 
     private let engine = AVAudioEngine()
+    /// Guards the merge state, which start() writes and the tap thread reads.
+    private let lock = NSLock()
+    private var tapInstalled = false
     private var aggregate: AudioObjectID?
     private var channelMap: [(uid: String, label: String)] = []
     private var current = 0
@@ -45,11 +48,14 @@ final class AudioCapture: @unchecked Sendable {
             aggregate = agg
             deviceID = agg
         }
-        channelMap = devices.flatMap { d in
+        let map = devices.flatMap { d in
             (0..<d.channels).map { c in (d.uid, d.channels > 1 ? "\(d.name) ch \(c + 1)" : d.name) }
         }
-        current = 0
-        challenger = nil
+        lock.withLock {
+            channelMap = map
+            current = 0
+            challenger = nil
+        }
 
         let input = engine.inputNode
         guard let unit = input.audioUnit else {
@@ -69,20 +75,28 @@ final class AudioCapture: @unchecked Sendable {
         input.installTap(onBus: 0, bufferSize: frames, format: format) { [weak self] buffer, _ in
             self?.process(buffer)
         }
+        tapInstalled = true
         configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine,
                                                                 queue: nil) { [weak self] _ in
             self?.onInterrupted?("the input's configuration changed")
         }
         engine.prepare()
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            // Leave nothing behind, so that the next attempt can install its tap.
+            stop()
+            throw error
+        }
         running = true
     }
 
     func stop() {
-        if running {
+        if tapInstalled {
             engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
+            tapInstalled = false
         }
+        if running || engine.isRunning { engine.stop() }
         running = false
         if let o = configObserver { NotificationCenter.default.removeObserver(o) }
         configObserver = nil
@@ -110,6 +124,8 @@ final class AudioCapture: @unchecked Sendable {
     static let switchBlocks = 3
 
     private func process(_ buffer: AVAudioPCMBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
         guard let data = buffer.floatChannelData else { return }
         let n = Int(buffer.frameLength)
         let channels = Int(buffer.format.channelCount)
