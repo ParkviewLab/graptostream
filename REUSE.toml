@@ -1,0 +1,27 @@
+# Catch-all REUSE annotations so whole trees are covered without per-file
+# headers. Per-file SPDX headers still win where present. See the handbook's licensing.md.
+version = 1
+
+SPDX-PackageName = "graptostream"
+SPDX-PackageSupplier = "Gary Frattarola <garyf@parkviewlab.ai>"
+
+# --- Documentation → CC-BY-4.0 ---------------------------------------------
+[[annotations]]
+path = ["docs/**", "README.md", "LICENSING.md", "CHANGELOG.md"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Gary Frattarola <garyf@parkviewlab.ai>"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+# --- Code, build scripts, configs, version pin → AGPL-3.0-or-later ----------
+[[annotations]]
+path = ["LICENSE", "VERSION.txt", ".gitignore", ".github/**", "AGENTS.md", "CLAUDE.md", "Package.swift", "Package.resolved"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Gary Frattarola <garyf@parkviewlab.ai>"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+# --- Brand marks: the app icon and its sources → all rights reserved ---------
+[[annotations]]
+path = ["brand/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Gary Frattarola <garyf@parkviewlab.ai>"
+SPDX-License-Identifier = "LicenseRef-AllRightsReserved"

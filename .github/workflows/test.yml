@@ -1,0 +1,36 @@
+name: Test
+
+# The package builds and its tests pass, and the app bundle and its disk image
+# build, on a macOS runner with the macOS 26 SDK or later, which SpeechAnalyzer
+# needs. The bundle is signed ad hoc here; releases are signed in release.yml.
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v6
+      - name: Toolchain
+        run: |
+          swift --version
+          xcrun --show-sdk-version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+      - name: Build Graptostream.app
+        run: ./build.sh
+      - name: The disk image builds and verifies
+        run: scripts/make-dmg
+      - name: The app and its version are present
+        run: |
+          test -x Graptostream.app/Contents/MacOS/Graptostream
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Graptostream.app/Contents/Info.plist)" = "$(tr -d '[:space:]' < VERSION.txt)"

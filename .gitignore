@@ -1,0 +1,7 @@
+.build/
+.swiftpm/
+*.app
+dist/
+spikes/.build/
+.DS_Store
+notarization.json
