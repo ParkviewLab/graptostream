@@ -11,7 +11,7 @@ It uses only Apple's own frameworks: Core Audio and AVFoundation to capture, App
 
 ## Status
 
-Version 0.1.0. Tested only with recordings fed in place of the microphones (`--feed`); not yet tested live with real microphones.
+Version 0.1.1. Tested live with a MacBook Air's built-in microphone; not yet with the RØDE Wireless GO II receiver or with several microphones at once.
 
 It is the macOS-only companion of indigo-noting, a proposed design, not yet public, for the same idea on macOS and Linux.
 
@@ -66,7 +66,7 @@ event: segment
 data: {"end":"2026-10-28T10:14:08.400Z","full":"Fred, open today's note.","heard":"Fred","id":1042,"seg":"000087","source":"Wireless GO II RX ch 1","start":"2026-10-28T10:14:03.200Z","state":"final","text":"open today's note.","to":"scrinotia"}
 ```
 
-`state` is `provisional` while you are still speaking and `final` once you pause, about a second later; a final replaces the provisional versions that share its `seg`. A final also arrives when a segment reaches the longest length set in Settings without a pause. For an addressed utterance, `text` is the words after the name and `full` is everything heard. A final's `text` may be empty; skip it. `to`, `heard` and `source` are present only when they have a value. `id` is unique across restarts; `seg` is unique only within one run of the app.
+`state` is `provisional` while you are still speaking and `final` once you pause, about a second later; a final replaces the provisional versions that share its `seg`. A provisional segment's `start` is approximate, up to about two seconds after the speech began, because Apple's engine does not time words reliably until they are final; a final's `start` and `end` are exact. A final also arrives when a segment reaches the longest length set in Settings without a pause. For an addressed utterance, `text` is the words after the name and `full` is everything heard. A final's `text` may be empty; skip it. `to`, `heard` and `source` are present only when they have a value. `id` is unique across restarts; `seg` is unique only within one run of the app.
 
 From a shell:
 

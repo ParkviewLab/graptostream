@@ -302,3 +302,41 @@ final class Collected: @unchecked Sendable {
         #expect(policy.decide(req([:]), from: .network) == .deny(status: 401, reason: "a bearer token is required"))
     }
 }
+
+@Suite struct Timing {
+    // Values from a recording with 40 s of silence before "Knock, knock"
+    // (2026-10-29): the first provisional with words covered 0 to 41.4 s.
+    @Test func aProvisionalSegmentStartsWhenItsWordsWereFirstHeard() {
+        var t = SegmentTiming()
+        #expect(t.provisional(rangeEnd: 41.4, hasWords: true) == 41.4)
+        #expect(t.provisional(rangeEnd: 42.4, hasWords: true) == 41.4)
+    }
+
+    @Test func punctuationAloneDoesNotStartTheSegment() {
+        var t = SegmentTiming()
+        _ = t.provisional(rangeEnd: 20.3, hasWords: false)
+        #expect(t.firstHeard == nil)
+        #expect(t.provisional(rangeEnd: 41.4, hasWords: true) == 41.4)
+    }
+
+    @Test func silenceBeforeTheSpeechDoesNotCountTowardsTheLimit() {
+        var t = SegmentTiming()
+        _ = t.provisional(rangeEnd: 41.4, hasWords: true)
+        #expect(!t.isTooLong(end: 44.3, limit: 30))
+        #expect(t.isTooLong(end: 71.5, limit: 30))
+    }
+
+    @Test func nothingIsTooLongBeforeAWordIsHeard() {
+        var t = SegmentTiming()
+        _ = t.provisional(rangeEnd: 60, hasWords: false)
+        #expect(!t.isTooLong(end: 60, limit: 30))
+    }
+
+    @Test func resetBeginsANewSegment() {
+        var t = SegmentTiming()
+        _ = t.provisional(rangeEnd: 41.4, hasWords: true)
+        t.reset()
+        #expect(t.firstHeard == nil)
+        #expect(t.provisional(rangeEnd: 42.4, hasWords: true) == 42.4)
+    }
+}
