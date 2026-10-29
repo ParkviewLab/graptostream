@@ -4,6 +4,16 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+## [v0.1.1] - 2026-10-29
+
+### Highlights
+
+Provisional segments are now timed from the speech itself rather than from the silence preceding it. Apple's provisional results cover all audio since the previous segment ended, so a long pause before speaking pushed the reported start time far too early and caused the length limit (30 seconds by default) to be exceeded almost immediately, finalising a segment after a word or two. A provisional segment now starts at the end of the first provisional range that contains words, within about two seconds of the speech beginning, and the length limit is measured from that point; final segments keep their own exact ranges, and the README notes that provisional start times are approximate.
+
+### Bug fixes
+
+- Time provisional segments from the speech, not the silence before it (#8)
+
 ## [v0.1.0] - 2026-10-28
 
 ### Highlights
