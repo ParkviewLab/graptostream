@@ -44,7 +44,7 @@ final class Recognizer: @unchecked Sendable {
     private var sessionStart = Date()
     private var counter = 0
     private var currentID: String?
-    private var currentStart: Double?
+    private var timing = SegmentTiming()
     private var lastSource: String?
 
     func makeTranscriber() -> SpeechTranscriber {
@@ -79,7 +79,7 @@ final class Recognizer: @unchecked Sendable {
             self.converter = nil
             self.sessionStart = Date()
             self.currentID = nil
-            self.currentStart = nil
+            self.timing.reset()
         }
         resultsTask = Task { [weak self] in
             do {
@@ -134,12 +134,10 @@ final class Recognizer: @unchecked Sendable {
     private func handle(_ result: SpeechTranscriber.Result) {
         let text = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
         lock.lock()
-        let start = result.range.start.seconds
         let end = result.range.end.seconds
         if currentID == nil {
             counter += 1
             currentID = String(format: "%06d", counter)
-            currentStart = start
             currentPublished = false
         }
         // An empty final still closes a segment whose provisional text was published,
@@ -148,14 +146,16 @@ final class Recognizer: @unchecked Sendable {
         let publish = !text.isEmpty || (result.isFinal && currentPublished)
         if !result.isFinal, !text.isEmpty { currentPublished = true }
         let id = currentID!
-        let segStart = currentStart ?? start
+        let hasWords = text.contains { $0.isLetter || $0.isNumber }
+        let start = result.isFinal ? result.range.start.seconds
+            : timing.provisional(rangeEnd: end, hasWords: hasWords)
+        let tooLong = !result.isFinal && timing.isTooLong(end: end, limit: _maximumSegmentSeconds)
         let origin = sessionStart
         let source = lastSource
         if result.isFinal {
             currentID = nil
-            currentStart = nil
+            timing.reset()
         }
-        let tooLong = !result.isFinal && end - segStart > _maximumSegmentSeconds
         let analyzer = self.analyzer
         lock.unlock()
 
@@ -169,4 +169,5 @@ final class Recognizer: @unchecked Sendable {
             Task { try? await analyzer.finalize(through: nil) }
         }
     }
+
 }
