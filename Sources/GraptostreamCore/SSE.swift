@@ -14,7 +14,9 @@ public enum SSE {
         return out + "\n"
     }
 
-    public static func frame(_ e: Event) -> String { frame(id: e.id, event: "segment", data: e.json) }
+    public static func frame(_ e: Event) -> String {
+        frame(id: e.id, event: e.segment.kind?.rawValue ?? "segment", data: e.json)
+    }
 
     /// A comment line, which keeps a connection alive and is ignored by clients.
     public static let keepAlive = ": keep-alive\n\n"
@@ -28,7 +30,8 @@ public enum SSE {
 public struct StreamFilter: Sendable, Equatable {
     /// Only final segments.
     public var finalOnly: Bool
-    /// Only segments addressed to this app (implies final segments, since only finals are addressed).
+    /// Only segments addressed to this app (implies final segments, since only finals are
+    /// addressed), and the app's interruptions.
     public var to: String?
 
     public init(finalOnly: Bool = false, to: String? = nil) {
@@ -38,7 +41,8 @@ public struct StreamFilter: Sendable, Equatable {
 
     public func admits(_ s: Segment) -> Bool {
         if let to {
-            return s.state == .final && s.to?.caseInsensitiveCompare(to) == .orderedSame
+            let mine = s.to?.caseInsensitiveCompare(to) == .orderedSame
+            return mine && (s.state == .final || s.kind != nil)
         }
         return !finalOnly || s.state == .final
     }

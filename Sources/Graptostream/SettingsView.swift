@@ -53,6 +53,13 @@ struct NamesTab: View {
                 }
                 .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || app.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            Divider()
+            HStack {
+                Text("Interrupt word")
+                TextField("hush", text: $model.settings.interruptWord).frame(width: 140)
+            }
+            Text("A spoken name followed by this word, anywhere in what is heard, interrupts that app (\"Fred, \(model.settings.interruptWord)\") and is not passed to it as speech.")
+                .font(.callout).foregroundStyle(.secondary)
         }
     }
 }

@@ -50,7 +50,7 @@ public final class EventHub: @unchecked Sendable {
         let targets = sinks.values.filter { $0.0.admits(segment) }.map(\.1)
         lock.unlock()
         if let reserve { store?.reserveEventIDs(through: reserve) }
-        if segment.state == .final, !segment.full.isEmpty { store?.append(event) }
+        if segment.state == .final, segment.kind == nil, !segment.full.isEmpty { store?.append(event) }
         for sink in targets { sink(event) }
         return event
     }
