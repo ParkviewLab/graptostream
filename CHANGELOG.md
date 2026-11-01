@@ -4,6 +4,16 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+## [v0.3.0] - 2026-10-31
+
+### Highlights
+
+Saying an app's spoken name followed by the interrupt word — "hush" by default, configurable on the Spoken names tab — now sends that app a `hush` event, detected from provisional text anywhere in a segment so it fires mid-sentence rather than at the end of an utterance. These hush segments are delivered as `event: hush` to clients subscribed with `?to=<app>` and are not written to the transcript; an utterance that begins with the name and interrupt word is published unaddressed instead of being routed as a normal request. What an interruption means is left to the receiving app.
+
+### Features
+
+- An interrupt word: "<name> hush" sends the app a hush event (#12)
+
 ## [v0.2.0] - 2026-10-31
 
 ### Highlights
