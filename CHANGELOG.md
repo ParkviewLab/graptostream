@@ -4,6 +4,16 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+## [v0.2.0] - 2026-10-31
+
+### Highlights
+
+Sentences spoken without a pause between them are now joined into a single utterance, so a name at the start of the first sentence addresses all of them rather than only the first. A new General setting, "Join sentences that follow within 0.333 s", controls the join window and can be set anywhere from 0 to 2 seconds, with 0 disabling joining entirely. Saved settings files are now read key by key with defaults applied for anything missing, so an existing file without the new key keeps its spoken names and other values instead of reverting to defaults.
+
+### Features
+
+- Join sentences spoken without a pause into one utterance (#10)
+
 ## [v0.1.1] - 2026-10-29
 
 ### Highlights
