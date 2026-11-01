@@ -117,6 +117,10 @@ struct GeneralTab: View {
                     value: $model.settings.retentionDays, in: 1...3650)
             Stepper("End a segment after \(Int(model.settings.maximumSegmentSeconds)) s without a pause",
                     value: $model.settings.maximumSegmentSeconds, in: 10...120, step: 5)
+            Stepper(model.settings.joinWithinSeconds > 0
+                        ? "Join sentences that follow within \(model.settings.joinWithinSeconds.formatted(.number.precision(.fractionLength(3)))) s"
+                        : "Do not join sentences",
+                    value: $model.settings.joinWithinSeconds, in: 0...2, step: 0.083)
             LabeledContent("Transcript folder") {
                 Button("Show in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([model.store.directory])

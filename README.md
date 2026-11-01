@@ -37,7 +37,7 @@ In **Settings**:
 
 - **Spoken names** map a name to an app, for example "Fred" to `scrinotia`. Ordinary, distinct words work best: the speech engine mishears invented names. A name counts only at the start of an utterance. A possessive counts, and so does a near spelling of a word of six letters or more; shorter words must be heard exactly. A name spoken on its own addresses the next utterance, if it begins within 4 s.
 - **Network** sets the port, switches on serving the stream to other machines, and issues a token for each such client.
-- **General** sets how long the transcript is kept (30 days by default), the longest segment without a pause, and starting at login.
+- **General** sets how long the transcript is kept (30 days by default), the longest segment without a pause, how close sentences must follow to be joined (0.333 s by default; 0 turns joining off), and starting at login.
 
 ## The stream
 
@@ -66,7 +66,7 @@ event: segment
 data: {"end":"2026-10-28T10:14:08.400Z","full":"Fred, open today's note.","heard":"Fred","id":1042,"seg":"000087","source":"Wireless GO II RX ch 1","start":"2026-10-28T10:14:03.200Z","state":"final","text":"open today's note.","to":"scrinotia"}
 ```
 
-`state` is `provisional` while you are still speaking and `final` once you pause, about a second later; a final replaces the provisional versions that share its `seg`. A provisional segment's `start` is approximate, up to about two seconds after the speech began, because Apple's engine does not time words reliably until they are final; a final's `start` and `end` are exact. A final also arrives when a segment reaches the longest length set in Settings without a pause. For an addressed utterance, `text` is the words after the name and `full` is everything heard. A final's `text` may be empty; skip it. `to`, `heard` and `source` are present only when they have a value. `id` is unique across restarts; `seg` is unique only within one run of the app.
+`state` is `provisional` while you are still speaking and `final` once you pause, about a second later. Apple's engine ends a segment at each sentence even without a pause, so a final is held for the join window: if the next sentence's words arrive within it, they are joined on, shown meanwhile as provisional text of the same segment, and the whole is released as one final, addressed by the name at its start; a final replaces the provisional versions that share its `seg`. A provisional segment's `start` is approximate, up to about two seconds after the speech began, because Apple's engine does not time words reliably until they are final; a final's `start` and `end` are exact. A final also arrives when a segment reaches the longest length set in Settings without a pause. For an addressed utterance, `text` is the words after the name and `full` is everything heard. A final's `text` may be empty; skip it. `to`, `heard` and `source` are present only when they have a value. `id` is unique across restarts; `seg` is unique only within one run of the app.
 
 From a shell:
 
