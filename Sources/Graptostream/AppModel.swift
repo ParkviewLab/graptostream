@@ -30,8 +30,30 @@ struct AppSettings: Codable, Equatable {
     var lan = false
     var tokens: [ClientToken] = []
     var maximumSegmentSeconds = 30.0
+    /// Sentences that follow one another within this many seconds are joined into one
+    /// utterance (see `SentenceJoiner`); 0 turns joining off.
+    var joinWithinSeconds = 0.333
 
     static let key = "settings.v1"
+
+    init() {}
+
+    /// Each setting is read on its own, so that a setting added in a later version takes
+    /// its default rather than making the saved settings unreadable.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AppSettings()
+        selected = try c.decodeIfPresent([String].self, forKey: .selected) ?? d.selected
+        mode = try c.decodeIfPresent(ListenMode.self, forKey: .mode) ?? d.mode
+        names = try c.decodeIfPresent([SpokenName].self, forKey: .names) ?? d.names
+        retentionDays = try c.decodeIfPresent(Int.self, forKey: .retentionDays) ?? d.retentionDays
+        port = try c.decodeIfPresent(UInt16.self, forKey: .port) ?? d.port
+        lan = try c.decodeIfPresent(Bool.self, forKey: .lan) ?? d.lan
+        tokens = try c.decodeIfPresent([ClientToken].self, forKey: .tokens) ?? d.tokens
+        maximumSegmentSeconds = try c.decodeIfPresent(Double.self, forKey: .maximumSegmentSeconds)
+            ?? d.maximumSegmentSeconds
+        joinWithinSeconds = try c.decodeIfPresent(Double.self, forKey: .joinWithinSeconds) ?? d.joinWithinSeconds
+    }
 
     static func load() -> AppSettings {
         guard let data = UserDefaults.standard.data(forKey: key),
@@ -104,6 +126,7 @@ final class AppModel {
     let backend: Backend
     let server: Server
     let addresser = Addresser()
+    let joiner = SentenceJoinQueue(window: 0.333)
     let capture = AudioCapture()
     let feed = FileFeed()
     let recognizer = Recognizer()
@@ -142,9 +165,14 @@ final class AppModel {
     private func wire() {
         addresser.setNames(settings.names)
         recognizer.maximumSegmentSeconds = settings.maximumSegmentSeconds
+        joiner.window = settings.joinWithinSeconds
         let hub = self.hub
         let addresser = self.addresser
-        recognizer.onSegment = { seg in
+        let joiner = self.joiner
+        // Sentences spoken without a pause are joined before addressing, so that the name
+        // at the start of the first addresses them all.
+        recognizer.onSegment = { seg in joiner.receive(seg) }
+        joiner.onSegment = { seg in
             var seg = seg
             if seg.state == .final {
                 let a = addresser.address(seg.text, start: seg.start, end: seg.end)
@@ -208,6 +236,7 @@ final class AppModel {
         if settings.tokens != old.tokens { server.setTokens(settings.tokens) }
         if settings.port != old.port || settings.lan != old.lan { startServer() }
         recognizer.maximumSegmentSeconds = settings.maximumSegmentSeconds
+        joiner.window = settings.joinWithinSeconds
         if settings.retentionDays != old.retentionDays { store.sweep(retentionDays: settings.retentionDays) }
         evaluate(force: settings.selected != old.selected)
     }
