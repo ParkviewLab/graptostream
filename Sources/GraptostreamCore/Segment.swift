@@ -23,9 +23,14 @@ public struct Segment: Codable, Sendable, Equatable {
     public var heard: String?
     /// The input that carried the speech (a microphone, or one of its channels).
     public var source: String?
+    /// Set for an interruption rather than speech: `hush` when a spoken name was followed
+    /// by the interrupt word. Such an event goes to its app as `event: hush` and is not stored.
+    public var kind: Kind?
+
+    public enum Kind: String, Codable, Sendable { case hush }
 
     public init(seg: String, state: State, start: Date, end: Date, text: String, full: String? = nil,
-                to: String? = nil, heard: String? = nil, source: String? = nil) {
+                to: String? = nil, heard: String? = nil, source: String? = nil, kind: Kind? = nil) {
         self.seg = seg
         self.state = state
         self.start = start
@@ -35,6 +40,7 @@ public struct Segment: Codable, Sendable, Equatable {
         self.to = to
         self.heard = heard
         self.source = source
+        self.kind = kind
     }
 }
 
@@ -106,6 +112,7 @@ struct EventRecord: Codable {
     var to: String?
     var heard: String?
     var source: String?
+    var kind: Segment.Kind?
 
     init(_ e: Event) {
         id = e.id
@@ -118,11 +125,12 @@ struct EventRecord: Codable {
         to = e.segment.to
         heard = e.segment.heard
         source = e.segment.source
+        kind = e.segment.kind
     }
 
     var event: Event {
         Event(id: id, segment: Segment(seg: seg, state: state, start: start, end: end, text: text, full: full,
-                                       to: to, heard: heard, source: source))
+                                       to: to, heard: heard, source: source, kind: kind))
     }
 }
 

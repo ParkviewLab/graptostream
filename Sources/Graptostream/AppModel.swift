@@ -33,6 +33,8 @@ struct AppSettings: Codable, Equatable {
     /// Sentences that follow one another within this many seconds are joined into one
     /// utterance (see `SentenceJoiner`); 0 turns joining off.
     var joinWithinSeconds = 0.333
+    /// After a spoken name, interrupts that app instead of addressing it (see `InterruptDetector`).
+    var interruptWord = "hush"
 
     static let key = "settings.v1"
 
@@ -53,6 +55,7 @@ struct AppSettings: Codable, Equatable {
         maximumSegmentSeconds = try c.decodeIfPresent(Double.self, forKey: .maximumSegmentSeconds)
             ?? d.maximumSegmentSeconds
         joinWithinSeconds = try c.decodeIfPresent(Double.self, forKey: .joinWithinSeconds) ?? d.joinWithinSeconds
+        interruptWord = try c.decodeIfPresent(String.self, forKey: .interruptWord) ?? d.interruptWord
     }
 
     static func load() -> AppSettings {
@@ -127,6 +130,7 @@ final class AppModel {
     let server: Server
     let addresser = Addresser()
     let joiner = SentenceJoinQueue(window: 0.333)
+    let interrupts = InterruptDetector()
     let capture = AudioCapture()
     let feed = FileFeed()
     let recognizer = Recognizer()
@@ -164,15 +168,21 @@ final class AppModel {
 
     private func wire() {
         addresser.setNames(settings.names)
+        addresser.interruptWord = settings.interruptWord
+        interrupts.setNames(settings.names)
+        interrupts.setWord(settings.interruptWord)
         recognizer.maximumSegmentSeconds = settings.maximumSegmentSeconds
         joiner.window = settings.joinWithinSeconds
         let hub = self.hub
         let addresser = self.addresser
         let joiner = self.joiner
+        let interrupts = self.interrupts
         // Sentences spoken without a pause are joined before addressing, so that the name
         // at the start of the first addresses them all.
         recognizer.onSegment = { seg in joiner.receive(seg) }
         joiner.onSegment = { seg in
+            // An interruption goes out first, from provisional text, so that it arrives fast.
+            for hush in interrupts.detect(seg) { hub.publish(hush) }
             var seg = seg
             if seg.state == .final {
                 let a = addresser.address(seg.text, start: seg.start, end: seg.end)
@@ -232,7 +242,12 @@ final class AppModel {
     }
 
     private func settingsChanged(from old: AppSettings) {
-        if settings.names != old.names { addresser.setNames(settings.names) }
+        if settings.names != old.names {
+            addresser.setNames(settings.names)
+            interrupts.setNames(settings.names)
+        }
+        addresser.interruptWord = settings.interruptWord
+        interrupts.setWord(settings.interruptWord)
         if settings.tokens != old.tokens { server.setTokens(settings.tokens) }
         if settings.port != old.port || settings.lan != old.lan { startServer() }
         recognizer.maximumSegmentSeconds = settings.maximumSegmentSeconds
